@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+import json, subprocess, time, threading, argparse
+from datetime import datetime, timedelta
+
+EVE_JSON = "/var/log/suricata/eve.json"
+WHITELIST_FILE = "/etc/suricata/whitelist.txt"
+LOG_FILE = "/var/log/response_script.log"
+BLOCK_DURATION = 300
+
+blocked_ips = {}
+lock = threading.Lock()
+
+def log(action, ip, reason=""):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"{ts} | {action} | {ip} | {reason}"
+    print(line)
+    with open(LOG_FILE, "a") as f:
+        f.write(line + "\n")
+
+def load_whitelist():
+    try:
+        with open(WHITELIST_FILE) as f:
+            return set(l.strip() for l in f if l.strip() and not l.startswith("#"))
+    except FileNotFoundError:
+        return set()
+
+def block_ip(ip):
+    with lock:
+        if ip in blocked_ips:
+            return
+        if ip in load_whitelist():
+            log("SKIP-WHITELIST", ip)
+            return
+        r = subprocess.run(["sudo", "nft", "add", "element", "inet", "filter", "blocked_ips", "{", ip, "}"], capture_output=True, text=True)
+        if r.returncode != 0:
+            log("BLOCK-FAILED", ip, r.stderr.strip())
+            return
+        blocked_ips[ip] = datetime.now() + timedelta(seconds=BLOCK_DURATION)
+        log("BLOCK", ip, f"expires in {BLOCK_DURATION}s")
+
+def unblock_ip(ip):
+    with lock:
+        r = subprocess.run(["sudo", "nft", "delete", "element", "inet", "filter", "blocked_ips", "{", ip, "}"], capture_output=True, text=True)
+        if r.returncode == 0:
+            log("UNBLOCK", ip)
+        else:
+            log("UNBLOCK-FAILED", ip, r.stderr.strip())
+        blocked_ips.pop(ip, None)
+
+def expiry_checker():
+    while True:
+        time.sleep(5)
+        now = datetime.now()
+        with lock:
+            expired = [ip for ip, exp in blocked_ips.items() if exp <= now]
+        for ip in expired:
+            unblock_ip(ip)
+
+def process_line(line):
+    line = line.strip()
+    if not line:
+        return
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return
+    if event.get("event_type") != "alert":
+        return
+    src_ip = event.get("src_ip")
+    if src_ip:
+        block_ip(src_ip)
+
+def tail_live(path):
+    with open(path, "r") as f:
+        f.seek(0, 2)
+        while True:
+            line = f.readline()
+            if not line:
+                time.sleep(0.5)
+                continue
+            process_line(line)
+
+def replay_file(path):
+    with open(path, "r") as f:
+        for line in f:
+            process_line(line)
+
+def main():
+    global BLOCK_DURATION
+    p = argparse.ArgumentParser()
+    p.add_argument("--file", default=EVE_JSON)
+    p.add_argument("--replay", action="store_true")
+    p.add_argument("--duration", type=int, default=BLOCK_DURATION)
+    args = p.parse_args()
+    BLOCK_DURATION = args.duration
+
+    log("START", "-", f"mode={'replay' if args.replay else 'live'} file={args.file}")
+    threading.Thread(target=expiry_checker, daemon=True).start()
+    if args.replay:
+        replay_file(args.file)
+        log("REPLAY-DONE", "-", "waiting for expiry")
+        time.sleep(BLOCK_DURATION + 10)
+    else:
+        tail_live(args.file)
+
+if __name__ == "__main__":
+    main()
