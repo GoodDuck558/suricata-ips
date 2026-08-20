@@ -26,9 +26,9 @@ All three machines run as VirtualBox VMs on an isolated internal network, with n
 ## Detection
 
 Custom Suricata rules for:
+- Pinging the ip address
 - Port scanning
 - SSH brute-force attempts
-- Periodic "beacon"-style connections (C2-style traffic pattern)
 
 ## Response
 
