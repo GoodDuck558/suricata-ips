@@ -2,10 +2,6 @@
 
 An inline Intrusion Prevention System that detects network attacks in real time and automatically blocks the source using Suricata and nftables.
 
-## Status
-
-🚧 In progress. Core lab environment and detection pipeline are being built now. This README will be updated with results as each component is completed.
-
 ## Overview
 
 Most student IDS/IPS projects stop at passive detection (alerting only). This project runs Suricata in **inline mode**, meaning it sits directly in the traffic path and can actively drop malicious connections in real time, not just log them.
